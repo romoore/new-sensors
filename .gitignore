@@ -4,3 +4,15 @@
 *.jar
 *.war
 *.ear
+
+# Eclipse stuff
+.classpath
+.project
+.settings
+
+# Build stuff
+target
+bin
+
+# Logging
+*.log

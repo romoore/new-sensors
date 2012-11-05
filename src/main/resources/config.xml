@@ -1,0 +1,7 @@
+<com.owlplatform.solver.newsensors.Configuration>
+  <aggregatorHost>localhost</aggregatorHost>
+  <worldModelHost>localhost</worldModelHost>
+  <aggregatorPort>7008</aggregatorPort>
+  <wmSolverPort>7009</wmSolverPort>
+  <wmClientPort>7010</wmClientPort>
+</com.owlplatform.solver.newsensors.Configuration>
