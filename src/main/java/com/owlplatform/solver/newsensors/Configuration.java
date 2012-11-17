@@ -29,6 +29,7 @@ public class Configuration {
   private int aggregatorPort = 7008;
   private int wmSolverPort = 7009;
   private int wmClientPort = 7010;
+  private long updateFreqMillis = 30000;
   public String getAggregatorHost() {
     return aggregatorHost;
   }
@@ -58,5 +59,11 @@ public class Configuration {
   }
   public void setWmClientPort(int wmClientPort) {
     this.wmClientPort = wmClientPort;
+  }
+  public long getUpdateFreqMillis() {
+    return updateFreqMillis;
+  }
+  public void setUpdateFreqMillis(long updateFreqMillis) {
+    this.updateFreqMillis = updateFreqMillis;
   }
 }
