@@ -18,6 +18,7 @@
 package com.owlplatform.solver.newsensors;
 
 import java.io.File;
+import java.io.UnsupportedEncodingException;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -31,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.owlplatform.common.SampleMessage;
+import com.owlplatform.common.util.NumericUtils;
 import com.owlplatform.solver.SolverAggregatorConnection;
 import com.owlplatform.solver.rules.SubscriptionRequestRule;
 import com.owlplatform.worldmodel.Attribute;
@@ -76,7 +78,7 @@ public class NewSensors extends Thread {
     });
 
     solver.init();
-
+    solver.start();
   }
 
   /**
@@ -98,6 +100,8 @@ public class NewSensors extends Thread {
   private static final String PHY_ATTRIBUTE = "physical layer";
   private static final String DEVICE_ATTRIBUTE = "device id";
   private static final String UNKNOWN_IDENTIFIER = "unknown-device";
+
+  private static final String ORIGIN = "new-sensor-detector";
 
   private transient StepResponse wmUpdates = null;
 
@@ -146,13 +150,17 @@ public class NewSensors extends Thread {
     this.solverWm = new SolverWorldConnection();
     this.solverWm.setHost(this.config.getWorldModelHost());
     this.solverWm.setPort(this.config.getWmSolverPort());
-    this.solverWm.setOriginString("new-device-solver");
+    this.solverWm.setOriginString(ORIGIN);
 
     this.clientWm = new ClientWorldConnection();
     this.clientWm.setHost(this.config.getWorldModelHost());
     this.clientWm.setPort(this.config.getWmClientPort());
 
     this.updateFrequency = this.config.getUpdateFreqMillis();
+
+    log.info("Aggregator connection: {}", this.solverAgg);
+    log.info("WM Solver connection:  {}", this.solverWm);
+    log.info("WM Client connection:  {}", this.clientWm);
   }
 
   /**
@@ -176,6 +184,8 @@ public class NewSensors extends Thread {
       log.error("Unable to connect to the world model as a client.");
       return false;
     }
+
+    this.createSubscriptions();
     return true;
   }
 
@@ -229,12 +239,45 @@ public class NewSensors extends Thread {
         this.performUpdates();
       }
 
-      final SampleMessage sample = this.solverAgg.getNextSample();
-      String devId = fromSampleData(sample.getPhysicalLayer(),
-          sample.getDeviceId());
-      if (!this.existingSensors.contains(devId)
-          && !this.reportedSensors.contains(devId)) {
-        this.sensorsToReport.add(devId);
+      if (this.solverAgg.hasNext()) {
+        final SampleMessage sample = this.solverAgg.getNextSample();
+        String devId = fromSampleData(sample.getPhysicalLayer(),
+            sample.getDeviceId());
+        if (!(this.existingSensors.contains(devId)
+            || this.reportedSensors.contains(devId) || this.sensorsToReport
+              .contains(devId))) {
+          log.info("Adding sensor {}", devId);
+          this.sensorsToReport.add(devId);
+        }
+      }
+      // Check sensors to remove
+      while (this.wmUpdates.hasNext() && !this.wmUpdates.isError()) {
+        try {
+          WorldState state = this.wmUpdates.next();
+          log.info("Got world model state update: {}", state);
+
+          for (String identifier : state.getIdentifiers()) {
+            Collection<Attribute> attributes = state.getState(identifier);
+            for (Attribute attr : attributes) {
+              // Only requested ".*sensor.*", so these should all be sensor
+              // values
+              String devId = fromSensorAttribute(attr.getData());
+              if (devId != null) {
+                this.existingSensors.add(devId);
+              }
+            }
+          }
+        } catch (Exception e) {
+          log.error(
+              "An exception occurred while getting updates from the world model.",
+              e);
+          this.shutdown();
+          break;
+        }
+      }
+      if (this.wmUpdates.isError()) {
+        log.error("An error has occurred: {}", this.wmUpdates.getError());
+        this.shutdown();
       }
 
       now = System.currentTimeMillis();
@@ -252,77 +295,96 @@ public class NewSensors extends Thread {
       return null;
     }
 
-    StringBuilder sBuff = new StringBuilder((attributeData.length) * 2);
-
-    for (int i = 0; i < attributeData.length; ++i) {
-      sBuff.append(String.format("%2x",
-          Integer.valueOf(attributeData[i] & 0xFF)));
-    }
-    return sBuff.toString();
+    return NumericUtils.toHexString(attributeData);
 
   }
 
   private static String fromSampleData(final byte phy, final byte[] id) {
-    StringBuilder sBuff = new StringBuilder((id.length + 1) * 2);
-    sBuff.append(String.format("%2x", Integer.valueOf((phy & 0xFF))));
-
-    for (int i = 0; i < id.length; ++i) {
-      sBuff.append(String.format("%2x", Integer.valueOf(id[i] & 0xFF)));
-    }
-    return sBuff.toString();
+    byte[] newBytes = new byte[id.length + 1];
+    newBytes[0] = phy;
+    System.arraycopy(id, 0, newBytes, 1, id.length);
+    return NumericUtils.toHexString(newBytes);
   }
 
   private void performUpdates() {
-    // Check sensors to remove
-    while (this.wmUpdates.hasNext() && !this.wmUpdates.isError()) {
-      try {
-        WorldState state = this.wmUpdates.next();
+    log.info("Performing world model updates.");
 
-        for (String identifier : state.getIdentifiers()) {
-          Collection<Attribute> attributes = state.getState(identifier);
-          for (Attribute attr : attributes) {
-            // Only requested ".*sensor.*", so these should all be sensor values
-            String devId = fromSensorAttribute(attr.getData());
-            if (devId != null) {
-              this.existingSensors.add(devId);
-            }
-          }
-        }
-      } catch (Exception e) {
-        log.error(
-            "An exception occurred while getting updates from the world model.",
-            e);
-        this.shutdown();
-        break;
+    LinkedList<String> toRemove = new LinkedList<String>();
+
+    // Ok, now determine which sensors to "remove"
+    for (Iterator<String> iter = this.reportedSensors.iterator(); iter
+        .hasNext();) {
+      String reported = iter.next();
+
+      if (this.existingSensors.contains(reported)) {
+        log.info("Need to remove reported sensor {}", reported);
+        toRemove.add(reported);
+        iter.remove();
       }
-
-      LinkedList<String> toRemove = new LinkedList<String>();
-
-      // Ok, now determine which sensors to "remove"
-      for (String reported : this.reportedSensors) {
-        if (this.existingSensors.contains(reported)) {
-          toRemove.add(reported);
-        }
-      }
-
-      // Remove any sensors previously reported
-      if (!toRemove.isEmpty()) {
-        for(Iterator<String> iter = toRemove.iterator(); iter.hasNext();){
-          String deviceId = iter.next();
-          
-          String identifier  = this.reportedIdentifier.get(deviceId);
-          this.solverWm.delete(identifier);
-          
-          iter.remove();
-           
-        }
-      }
-
     }
-    if (this.wmUpdates.isError()) {
-      log.error("An error has occurred: {}", this.wmUpdates.getError());
-      this.shutdown();
+
+    // Remove any sensors previously reported
+    if (!toRemove.isEmpty()) {
+      log.info("Need to remove at least one recently-registered device.");
+      for (Iterator<String> iter = toRemove.iterator(); iter.hasNext();) {
+        String deviceId = iter.next();
+        log.info("{} is now used as a sensor.", deviceId);
+        String identifier = this.reportedIdentifier.get(deviceId);
+        this.solverWm.delete(identifier);
+
+        iter.remove();
+      }
     }
+
+    // Verify any "new" sensors are not already in the world model
+    for (Iterator<String> iter = this.sensorsToReport.iterator(); iter
+        .hasNext();) {
+      String deviceId = iter.next();
+
+      if (this.existingSensors.contains(deviceId)
+          || this.reportedSensors.contains(deviceId)) {
+        iter.remove();
+        log.info("{} is already in the world model, discarding.", deviceId);
+      } else {
+        log.info("{} will be added.", deviceId);
+      }
+    }
+
+    // Now report the new ones
+    for (Iterator<String> iter = this.sensorsToReport.iterator(); iter
+        .hasNext();) {
+      String deviceId = iter.next();
+      log.info("Reporting {} to world model", deviceId);
+      StringBuilder sBuff = new StringBuilder(this.config.getAggregatorHost())
+          .append(':').append(this.config.getAggregatorPort()).append('.')
+          .append(UNKNOWN_IDENTIFIER).append('.');
+      sBuff.append(deviceId);
+      String identifier = sBuff.toString();
+      this.reportedIdentifier.put(deviceId, identifier);
+      this.solverWm.createId(identifier);
+
+      Attribute phyAttr = new Attribute();
+      phyAttr.setAttributeName(PHY_ATTRIBUTE);
+      phyAttr.setId(identifier);
+      phyAttr.setCreationDate(System.currentTimeMillis());
+
+      phyAttr.setData(NumericUtils.fromHexString(deviceId.substring(0, 4)));
+
+      this.solverWm.updateAttribute(phyAttr);
+
+      Attribute idAttr = new Attribute();
+      idAttr.setAttributeName(DEVICE_ATTRIBUTE);
+      idAttr.setId(identifier);
+      idAttr.setCreationDate(System.currentTimeMillis());
+      idAttr.setData(NumericUtils.fromHexString(deviceId.substring(4)));
+
+      this.solverWm.updateAttribute(idAttr);
+      
+      this.reportedSensors.add(deviceId);
+      iter.remove();
+    }
+
+   
   }
 
 }

@@ -4,4 +4,5 @@
   <aggregatorPort>7008</aggregatorPort>
   <wmSolverPort>7009</wmSolverPort>
   <wmClientPort>7010</wmClientPort>
+  <updateFreqMillis>10000</updateFreqMillis>
 </com.owlplatform.solver.newsensors.Configuration>

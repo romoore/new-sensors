@@ -68,7 +68,7 @@
 					<archive>
 						<manifest>
 							<addClasspath>true</addClasspath>
-							<mainClass>com.owlplatform.solver.new-sensors.NewSensors</mainClass>
+							<mainClass>com.owlplatform.solver.newsensors.NewSensors</mainClass>
 						</manifest>
 					</archive>
 				</configuration>
@@ -83,7 +83,7 @@
 					</descriptorRefs>
 					<archive>
 						<manifest>
-							<mainClass>com.owlplatform.solver.new-sensors.NewSensors</mainClass>
+							<mainClass>com.owlplatform.solver.newsensors.NewSensors</mainClass>
 						</manifest>
 					</archive>
 				</configuration>
